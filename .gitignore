@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# Output
+output/
+*.npy
+out_edges.png
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files)
+data/*.mp4
+
+# Binaries and archives
+ffmpeg-8.0.1-full_build/
+*.7z
+*.rar
