@@ -1,0 +1,8 @@
+{
+  "skinFracThresh": 0.30,
+  "minRunFrac": 0.08,
+  "leftStretchFrac": 0.30,
+  "rightStretchFrac": 0.10,
+  "smoothingAlpha": 0.70,
+  "stringMinFrac": 0.40
+}
