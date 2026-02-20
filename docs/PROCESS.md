@@ -101,65 +101,47 @@ For each frame we compute **edge intensity** per string: mean vertical Sobel gra
 
 The hands (fretting and strumming) occlude parts of the strings. Edge intensity computed over the full frame width is diluted by static hand regions. We restrict analysis to the **relevant zone** between the two hands, where strings are visible and motion blur from playing is detectable.
 
-### Approach: Two Signals
+### Algorithm
 
-1. **Skin detection (HSV)** - Hands have high skin density. Columns with low skin fraction = between hands.
+Two signals are combined:
+
+1. **Skin detection** - Hands have high skin density. Columns with low skin fraction = between hands.
 2. **String visibility** - Columns where all 6 strings have strong edges = between hands (strings visible, not occluded).
 
-We combine both: when both succeed, use their intersection; otherwise use the longer run. Then stretch left and right to better match hand positions.
-
-### Debug: Skin and String Signals
-
-![Skin overlay, skin density plot, string visibility plot, and detected bbox](images/hands_region/01_skin_string_debug.png)
-
-Top to bottom: original frame; frame with skin mask overlay (red = skin); skin density per column (low = between hands); string visibility per column (high = between hands). Yellow box = algorithm-detected used region.
-
-### Algorithm Output
+When both succeed, we use their intersection; otherwise the longer run. We then stretch left and right to better match hand positions. Per-frame detection with temporal smoothing (exponential moving average). No per-video calibration required.
 
 ![Algorithm-detected used region with colored edges](images/hands_region/02_algorithm_region.png)
 
-Per-frame detection with temporal smoothing. No per-video calibration required.
+### Skin Detection (Detail)
 
-### Manual Calibration (Alternative)
+We convert the frame to HSV and threshold for skin tones: Hue 0-20 (red/orange range), Saturation >= 48, Value >= 80. A small morphological open (erode then dilate) removes noise. For each column in the ROI, we compute the fraction of skin pixels in a 9-pixel-wide band. Columns below `skinFracThresh` are considered "between hands" (low skin = fretboard visible). We find the longest contiguous run of such columns and require it to span at least `minRunFrac` of the frame width.
 
-For tuning or when the algorithm struggles, we support manual calibration: select the ROI between hands on 10 sample frames. Interpolation gives a bbox for any frame.
+![Skin overlay, skin density plot, string visibility plot, and detected bbox](images/hands_region/01_skin_string_debug.png)
 
-![Calibration preview at sample frame](images/hands_region/03_calibration_preview.png)
+Top to bottom: original frame; skin mask overlay (red = skin); skin density per column (low = between hands); string visibility per column (high = between hands). Yellow box = algorithm-detected used region.
 
-### Calibration Over Frames
+### String Visibility
 
-![10x10 grid of frames with interpolated used region](images/hands_region/04_used_region_grid.png)
+For each column, we sample the vertical Sobel gradient along all 6 string lines. The minimum across strings gives the weakest string visibility at that x. Columns above `stringMinFrac` of the peak are "good." We take the longest run of good columns, preferring runs near frame center.
 
-Shows how the calibration bbox changes across 100 consecutive frames.
-
-### Why Filter: Filtered vs Full Width
-
-Computing edge intensity only in the relevant zone (filtered) vs full frame width (unfiltered):
-
-![Edge intensity: filtered (algorithm) vs full width](images/hands_region/05_filtered_vs_full_comparison.png)
-
-Filtered traces show higher dynamic range and clearer peaks/dips. Full-width traces are smoother and diluted by background. Filtering improves suspect detection.
-
-### Config
+### Fine Tuning
 
 Parameters in `config/hands_region.json`:
 
-- `skinFracThresh` (0.30) - Skin fraction threshold; columns below = between hands
-- `minRunFrac` (0.08) - Minimum run length as fraction of width
-- `leftStretchFrac` (0.30), `rightStretchFrac` (0.10) - Extend detected range
-- `smoothingAlpha` (0.70) - Temporal smoothing
-- `stringMinFrac` (0.40) - String visibility threshold
+| Param | Default | Description |
+|-------|---------|-------------|
+| `skinFracThresh` | 0.30 | Skin fraction threshold; columns below = between hands |
+| `minRunFrac` | 0.08 | Minimum run length as fraction of frame width |
+| `leftStretchFrac` | 0.30 | Extend detected left edge outward by this fraction of width |
+| `rightStretchFrac` | 0.10 | Extend detected right edge outward |
+| `smoothingAlpha` | 0.70 | Temporal smoothing (higher = less smoothing) |
+| `stringMinFrac` | 0.40 | String visibility threshold as fraction of peak |
 
-### Iterations
+Filtering to the relevant zone improves suspect detection:
 
-| Change | Reason |
-|--------|--------|
-| Full width -> Filter to relevant zone | Hands dilute edge signal; focus on visible strings |
-| Calibration-only -> Algorithm option | No manual calibration needed; `useAlgorithm=True` |
-| Skin only -> Skin + string visibility | String visibility improves robustness |
-| Intersection when both succeed | More conservative, avoids false expansion |
-| Temporal smoothing | Reduces jitter across frames |
-| Config file | Tune params without code changes |
+![Edge intensity: filtered (algorithm) vs full width](images/hands_region/05_filtered_vs_full_comparison.png)
+
+Filtered traces show higher dynamic range and clearer peaks/dips. Full-width traces are smoother and diluted by background.
 
 ---
 
