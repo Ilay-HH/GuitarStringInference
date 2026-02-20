@@ -68,18 +68,32 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colors[i], 2)
     cv2.imwrite(str(outDir / "06_string_lines.png"), linesVis)
     bandVis = frame.copy()
-    for x in [0, w // 4, w // 2, 3 * w // 4, w - 1]:
-        yCoords = []
-        for (x1, y1, x2, y2) in stringLines:
-            if abs(x2 - x1) < 1e-6:
-                yCoords.append((y1 + y2) / 2)
-            else:
-                t = np.clip((x - x1) / (x2 - x1), 0, 1)
-                yCoords.append(y1 + t * (y2 - y1))
-        bounds = [0] + [(yCoords[i] + yCoords[i + 1]) / 2 for i in range(5)] + [h]
-        for i in range(6):
-            y1, y2 = int(bounds[i]), int(bounds[i + 1])
-            cv2.line(bandVis, (x, y1), (x, y2), colors[i], 2)
+    xs = np.arange(0, w, max(1, w // 100))
+    for i, (x1, y1, x2, y2) in enumerate(stringLines):
+        if abs(x2 - x1) < 1e-6:
+            ys = np.full_like(xs, (y1 + y2) / 2)
+        else:
+            t = np.clip((xs - x1) / (x2 - x1), 0, 1)
+            ys = y1 + t * (y2 - y1)
+        pts = np.column_stack([xs, ys]).astype(np.int32)
+        cv2.polylines(bandVis, [pts], False, colors[i], 2)
+        cv2.putText(bandVis, str(i + 1), (int(pts[0, 0]) + 5, int(pts[0, 1]) - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, colors[i], 2)
+    boundaryPts = []
+    for b in range(5):
+        mids = []
+        for x in xs:
+            yCoords = []
+            for (x1, y1, x2, y2) in stringLines:
+                if abs(x2 - x1) < 1e-6:
+                    yCoords.append((y1 + y2) / 2)
+                else:
+                    t = np.clip((x - x1) / (x2 - x1), 0, 1)
+                    yCoords.append(y1 + t * (y2 - y1))
+            mid = (yCoords[b] + yCoords[b + 1]) / 2
+            mids.append((x, mid))
+        pts = np.array(mids, dtype=np.int32)
+        cv2.polylines(bandVis, [pts], False, (255, 255, 255), 1)
     cv2.imwrite(str(outDir / "07_band_boundaries.png"), bandVis)
     fullEdges = np.zeros_like(gray)
     fullEdges[roiY1:roiY2, :] = roiEdges
@@ -95,7 +109,7 @@ def main():
         cv2.putText(overlay, f"Str {i + 1}", (x1 + 30, y),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
     cv2.imwrite(str(outDir / "09_final_overlay.png"), overlay)
-    docsDir = PROJECT_ROOT / "docs" / "images"
+    docsDir = PROJECT_ROOT / "docs" / "images" / "string_tracking"
     docsDir.mkdir(parents=True, exist_ok=True)
     generated = [
         "01_original.png", "02_roi_marked.png", "03_roi_grayscale.png", "04_canny_edges.png",
