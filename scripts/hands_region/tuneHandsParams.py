@@ -20,7 +20,7 @@ except ImportError:
         from ._string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
     except ImportError:
         from _string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
-from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange
+from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange, getRoiVerticalBounds
 
 
 def loadCalibration():
@@ -135,7 +135,7 @@ def main():
         print("Cannot read video")
         return
     h, w = first.shape[:2]
-    roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
+    roiY1, roiY2 = getRoiVerticalBounds(h)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
     roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
     stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)

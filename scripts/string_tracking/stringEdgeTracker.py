@@ -91,6 +91,35 @@ def fallbackStringLines(h, w, numStrings=6, roiY1=None, roiY2=None):
     return [(0, int(roiY1 + step * (i + 1)), w, int(roiY1 + step * (i + 1))) for i in range(numStrings)]
 
 
+def getHandsXRangeFromSkin(frame, roiY1, roiY2, w):
+    """Get x-range between hands from skin detection only. Returns (x1, x2) or None."""
+    from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange
+    skinMask = getSkinMask(frame, roiY1, roiY2)
+    return findLowSkinXRange(skinMask, roiY1, roiY2)
+
+
+def detectStringLinesInHandsRegion(frame, gray, numStrings=6, roiY1=None, roiY2=None, returnCrop=False):
+    """
+    Path 1: Use getProcessingRoi (config-driven, hands_region when auto) for bbox, then run string detection.
+    If returnCrop=True, returns (stringLines, x1, y1, x2, y2, croppedGray, croppedEdges).
+    """
+    from scripts.hands_region.handsRegionDetector import getProcessingRoi
+    h, w = gray.shape
+    bbox = getProcessingRoi(frame, gray, h, w, stringLines=None)
+    x1, y1, x2, y2 = bbox
+    roiCropped = gray[y1:y2, x1:x2]
+    roiEdges = cv2.Canny(roiCropped, 50, 150)
+    stringLines = detectStringLinesAngled(roiEdges, numStrings, 0, roiEdges.shape[0], yOffset=y1)
+    if stringLines is None:
+        if returnCrop:
+            return None, x1, y1, x2, y2, roiCropped, roiEdges
+        return None
+    linesFullFrame = [(line[0] + x1, line[1], line[2] + x1, line[3]) for line in stringLines]
+    if returnCrop:
+        return linesFullFrame, x1, y1, x2, y2, roiCropped, roiEdges
+    return linesFullFrame
+
+
 def getStringBands(frameHeight, numStrings=6, roiY1=None, roiY2=None, bandHeight=8):
     """Fallback: evenly spaced bands when Hough fails."""
     if roiY1 is None:
@@ -217,7 +246,8 @@ def detectSuspects(videoPath, stringLines, numStrings=6, dropThreshold=0.18, bas
     if not ret:
         raise RuntimeError("Cannot read first frame")
     h, w = first.shape[:2]
-    roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
+    from scripts.hands_region.handsRegionDetector import getRoiVerticalBounds
+    roiY1, roiY2 = getRoiVerticalBounds(h)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
     algoDetector = None
     if useAlgorithm:
@@ -278,8 +308,8 @@ def runTracking(videoPath, numStrings=6, sampleEvery=2, maxFrames=500, outputPat
         raise RuntimeError("Cannot read first frame")
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
-    roiY1 = int(gray.shape[0] * 0.2)
-    roiY2 = int(gray.shape[0] * 0.8)
+    from scripts.hands_region.handsRegionDetector import getRoiVerticalBounds
+    roiY1, roiY2 = getRoiVerticalBounds(gray.shape[0])
     stringYs = detectStringLines(edges, numStrings, roiY1, roiY2)
     if stringYs is None:
         stringYs = getStringBands(gray.shape[0], numStrings, roiY1, roiY2)

@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, computeEdgeIntensityForLine, fallbackStringLines
-from scripts.hands_region.handsRegionDetector import HandsRegionDetector
+from scripts.hands_region.handsRegionDetector import HandsRegionDetector, getRoiVerticalBounds
 
 
 def computeIntensitiesOverVideo(videoPath, stringLines, numStrings=6, useAlgorithm=False, sampleEvery=1):
@@ -23,7 +23,7 @@ def computeIntensitiesOverVideo(videoPath, stringLines, numStrings=6, useAlgorit
     if not ret:
         raise RuntimeError("Cannot read first frame")
     h, w = first.shape[:2]
-    roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
+    roiY1, roiY2 = getRoiVerticalBounds(h)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     algoDetector = HandsRegionDetector() if useAlgorithm else None
@@ -74,14 +74,17 @@ def main():
         return
 
     h, w = first.shape[:2]
-    roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-    stringLines = detectStringLinesInHandsRegion(first, gray, 6, roiY1, roiY2)
+    result = detectStringLinesInHandsRegion(first, gray, 6, returnCrop=True)
+    stringLines = result[0]
     if stringLines is None:
-        roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
-        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
+        handsY1, roiEdges = result[2], result[6]
+        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=handsY1)
+        if stringLines is not None:
+            stringLines = [(l[0] + result[1], l[1], l[2] + result[1], l[3]) for l in stringLines]
     if stringLines is None:
-        stringLines = fallbackStringLines(h, w, 6, roiY1, roiY2)
+        ry1, ry2 = getRoiVerticalBounds(h)
+        stringLines = fallbackStringLines(h, w, 6, ry1, ry2)
 
     fps = cv2.VideoCapture(str(videoPath)).get(cv2.CAP_PROP_FPS) or 30
     cv2.VideoCapture(str(videoPath)).release()

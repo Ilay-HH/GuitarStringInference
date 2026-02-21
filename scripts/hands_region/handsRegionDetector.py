@@ -96,7 +96,7 @@ def detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w,
     rightStretchFrac = rightStretchFrac if rightStretchFrac is not None else cfg.get("rightStretchFrac", 0.10)
     skinMask = getSkinMask(frame, roiY1, roiY2)
     xRangeSkin = findLowSkinXRange(skinMask, roiY1, roiY2)
-    xRangeStrings = findVisibleXRange(gray, stringLines)
+    xRangeStrings = findVisibleXRange(gray, stringLines) if stringLines else None
 
     candidates = []
     if xRangeSkin is not None:
@@ -121,6 +121,84 @@ def detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w,
 
     x1 = max(0, int(x1 - w * leftStretchFrac))
     x2 = min(w, int(x2 + w * rightStretchFrac))
+
+    y1, y2 = roiY1, roiY2
+    if stringLines and len(stringLines) >= 2:
+        padding = cfg.get("stringHeightPadding", 0.15)
+        midX = (x1 + x2) / 2
+        yTop = _yAtX(stringLines[0], midX)
+        yBot = _yAtX(stringLines[-1], midX)
+        pad = max(1, (yBot - yTop) * padding)
+        y1 = max(roiY1, int(yTop - pad))
+        y2 = min(roiY2, int(yBot + pad))
+    return (x1, y1, x2, y2)
+
+
+def _yAtX(line, x):
+    x1, y1, x2, y2 = line
+    if abs(x2 - x1) < 1e-6:
+        return (y1 + y2) / 2
+    t = np.clip((x - x1) / (x2 - x1), 0, 1)
+    return y1 + t * (y2 - y1)
+
+
+def detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w):
+    """Bbox from skin-only (no string visibility). Used when strings not yet available."""
+    cfg = loadConfig()
+    leftStretchFrac = cfg.get("leftStretchFrac", 0.30)
+    rightStretchFrac = cfg.get("rightStretchFrac", 0.10)
+    skinMask = getSkinMask(frame, roiY1, roiY2)
+    xRange = findLowSkinXRange(skinMask, roiY1, roiY2)
+    if xRange is None:
+        return (int(w * 0.2), roiY1, int(w * 0.8), roiY2)
+    x1, x2 = xRange
+    x1 = max(0, int(x1 - w * leftStretchFrac))
+    x2 = min(w, int(x2 + w * rightStretchFrac))
+    return (x1, roiY1, x2, roiY2)
+
+
+def getRoiVerticalBounds(h, cfg=None):
+    """Returns (roiY1, roiY2) from config for skin/hands search area."""
+    cfg = cfg or loadConfig()
+    roiHeightCfg = cfg.get("roi_height", "auto")
+    heightFixed = cfg.get("roi_height_fixed", [0.2, 0.8])
+    if roiHeightCfg == "auto":
+        return int(h * heightFixed[0]), int(h * heightFixed[1])
+    fracs = roiHeightCfg if isinstance(roiHeightCfg, (list, tuple)) else heightFixed
+    return int(h * fracs[0]), int(h * fracs[1])
+
+
+def getProcessingRoi(frame, gray, h, w, stringLines=None):
+    """
+    Resolve ROI from config. Returns (x1, y1, x2, y2).
+    roi_height/roi_width: "auto" uses hands_region; [minFrac, maxFrac] uses fixed fractions.
+    """
+    cfg = loadConfig()
+    roiHeightCfg = cfg.get("roi_height", "auto")
+    roiWidthCfg = cfg.get("roi_width", "auto")
+    heightFixed = cfg.get("roi_height_fixed", [0.2, 0.8])
+    widthFixed = cfg.get("roi_width_fixed", [0.2, 0.8])
+
+    if roiHeightCfg == "auto":
+        roiY1 = int(h * heightFixed[0])
+        roiY2 = int(h * heightFixed[1])
+    else:
+        fracs = roiHeightCfg if isinstance(roiHeightCfg, (list, tuple)) else heightFixed
+        roiY1 = int(h * fracs[0])
+        roiY2 = int(h * fracs[1])
+
+    if roiWidthCfg == "auto":
+        if stringLines and len(stringLines) >= 6:
+            bbox = detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w)
+        else:
+            bbox = detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w)
+        if bbox is None:
+            bbox = (int(w * widthFixed[0]), roiY1, int(w * widthFixed[1]), roiY2)
+        return bbox
+
+    fracs = roiWidthCfg if isinstance(roiWidthCfg, (list, tuple)) else widthFixed
+    x1 = int(w * fracs[0])
+    x2 = int(w * fracs[1])
     return (x1, roiY1, x2, roiY2)
 
 

@@ -30,20 +30,25 @@ def main():
         print("Cannot read video")
         return
     h, w = first.shape[:2]
-    roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-    roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
-    stringLines = detectStringLinesInHandsRegion(first, gray, 6, roiY1, roiY2)
+    result = detectStringLinesInHandsRegion(first, gray, 6, returnCrop=True)
+    stringLines, handsX1, handsY1, handsX2, handsY2 = result[0], result[1], result[2], result[3], result[4]
     if stringLines is None:
-        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
+        roiEdges = result[6]
+        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=handsY1)
+        if stringLines is not None:
+            stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
     if stringLines is None:
-        stringLines = fallbackStringLines(h, w, 6, roiY1, roiY2)
+        from scripts.hands_region.handsRegionDetector import getRoiVerticalBounds
+        handsY1, handsY2 = getRoiVerticalBounds(h)
+        stringLines = fallbackStringLines(h, w, 6, handsY1, handsY2)
+    roiEdges = cv2.Canny(gray[handsY1:handsY2, handsX1:handsX2], 50, 150)
     colors = [
         (100, 100, 255), (50, 150, 255), (100, 255, 100),
         (255, 200, 50), (255, 100, 200), (100, 200, 255)
     ]
     fullEdges = np.zeros_like(gray)
-    fullEdges[roiY1:roiY2, :] = roiEdges
+    fullEdges[handsY1:handsY2, handsX1:handsX2] = roiEdges
     coloredEdges = colorEdgesByString(fullEdges, stringLines, colors)
 
     outDir = PROJECT_ROOT / "output" / "calibration_preview"
@@ -56,9 +61,9 @@ def main():
         if not ret:
             continue
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
+        roiEdges = cv2.Canny(gray[handsY1:handsY2, handsX1:handsX2], 50, 150)
         fullEdges = np.zeros_like(gray)
-        fullEdges[roiY1:roiY2, :] = roiEdges
+        fullEdges[handsY1:handsY2, handsX1:handsX2] = roiEdges
         coloredEdges = colorEdgesByString(fullEdges, stringLines, colors)
 
         bbox = getHandsBbox(str(videoPath), frameIdx, h, w)

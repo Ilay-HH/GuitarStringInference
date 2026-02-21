@@ -32,7 +32,7 @@ We use the first frame to locate the 6 strings. The process:
 
 #### Step 2: Region of Interest
 
-Define the fretboard area (20%-80% of frame height) to avoid hands, headstock, etc. We crop to this region before edge detection.
+Define the fretboard area via `config/hands_region.json` (`roi_height`, `roi_width`). Use `"auto"` to let hands_region detect the zone between hands, or `[minFrac, maxFrac]` for fixed fractions (default 20%-80%). We crop to this region before edge detection.
 
 ![ROI marked on frame](images/string_tracking/02_roi_marked.png)
 
@@ -130,6 +130,11 @@ Parameters in `config/hands_region.json`:
 
 | Param | Default | Description |
 |-------|---------|-------------|
+| `roi_height` | "auto" | `"auto"` = use hands_region; `[minFrac, maxFrac]` = fixed vertical bounds |
+| `roi_width` | "auto" | `"auto"` = use hands_region; `[minFrac, maxFrac]` = fixed horizontal bounds |
+| `roi_height_fixed` | [0.2, 0.8] | Fallback when roi_height is "auto" (search area for skin) |
+| `roi_width_fixed` | [0.2, 0.8] | Fallback when roi_width is "auto" |
+| `stringHeightPadding` | 0.15 | Padding around string-based height when refining bbox |
 | `skinFracThresh` | 0.30 | Skin fraction threshold; columns below = between hands |
 | `minRunFrac` | 0.08 | Minimum run length as fraction of frame width |
 | `leftStretchFrac` | 0.30 | Extend detected left edge outward by this fraction of width |

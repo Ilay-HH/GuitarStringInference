@@ -23,7 +23,7 @@ from scripts.string_tracking.stringEdgeTracker import (
     fallbackStringLines,
 )
 from scripts.hands_region.handsCalibrator import getHandsBbox
-from scripts.hands_region.handsRegionDetector import HandsRegionDetector
+from scripts.hands_region.handsRegionDetector import HandsRegionDetector, getProcessingRoi
 
 
 def stopAudio():
@@ -112,10 +112,13 @@ def drawLegend(overlay, colors, numStrings=6):
 def buildOverlay(frame, gray, edges, stringLines, colors, roiY1=None, roiY2=None, handsBbox=None, videoPath=None, frameIdx=None, algoDetector=None):
     """Overlay colored edges only within used region. algoDetector or calibration or fallback."""
     h, w = frame.shape[:2]
-    if roiY1 is None:
-        roiY1 = int(h * 0.2)
-    if roiY2 is None:
-        roiY2 = int(h * 0.8)
+    if roiY1 is None or roiY2 is None:
+        from scripts.hands_region.handsRegionDetector import getRoiVerticalBounds
+        ry1, ry2 = getRoiVerticalBounds(h)
+        if roiY1 is None:
+            roiY1 = ry1
+        if roiY2 is None:
+            roiY2 = ry2
     if handsBbox is None and algoDetector is not None:
         handsBbox = algoDetector.detect(frame, gray, stringLines, roiY1, roiY2, h, w)
     if handsBbox is None and videoPath is not None and frameIdx is not None:
@@ -150,18 +153,19 @@ def runAnnotator(videoPath, numStrings=6, outputPath=None, dropThreshold=0.18, u
         raise RuntimeError("Cannot read first frame")
     h, w = first.shape[:2]
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-    roiY1 = int(h * 0.2)
-    roiY2 = int(h * 0.8)
-    result = detectStringLinesInHandsRegion(first, gray, numStrings, roiY1, roiY2, returnCrop=True)
-    stringLines, handsX1, handsX2 = result[0], result[1], result[2]
+    result = detectStringLinesInHandsRegion(first, gray, numStrings, returnCrop=True)
+    stringLines, handsX1, handsY1, handsX2, handsY2 = result[0], result[1], result[2], result[3], result[4]
     if stringLines is None:
-        roiEdges = result[4]
-        stringLines = detectStringLinesAngled(roiEdges, numStrings, 0, roiEdges.shape[0], yOffset=roiY1)
+        roiEdges = result[6]
+        stringLines = detectStringLinesAngled(roiEdges, numStrings, 0, roiEdges.shape[0], yOffset=handsY1)
         if stringLines is not None:
             stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
     if stringLines is None:
-        stringLines = fallbackStringLines(h, w, numStrings, roiY1, roiY2)
-        handsX1, handsX2 = 0, w
+        stringLines = fallbackStringLines(h, w, numStrings, handsY1, handsY2)
+        handsX1, handsY1, handsX2, handsY2 = 0, int(h * 0.2), w, int(h * 0.8)
+    else:
+        bbox = getProcessingRoi(first, gray, h, w, stringLines)
+        handsX1, handsY1, handsX2, handsY2 = bbox
     print("Scanning video for suspect frames...")
     algoDetector = HandsRegionDetector() if useAlgorithm else None
     suspects = detectSuspects(videoPath, stringLines, numStrings, dropThreshold=dropThreshold,
@@ -198,11 +202,11 @@ def runAnnotator(videoPath, numStrings=6, outputPath=None, dropThreshold=0.18, u
             currentFrame = max(0, min(currentFrame, totalFrames - 1))
             continue
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roiCropped = gray[roiY1:roiY2, handsX1:handsX2]
+        roiCropped = gray[handsY1:handsY2, handsX1:handsX2]
         roiEdges = cv2.Canny(roiCropped, 50, 150)
         edges = np.zeros_like(gray)
-        edges[roiY1:roiY2, handsX1:handsX2] = roiEdges
-        overlay = buildOverlay(frame, gray, edges, stringLines, colors, roiY1, roiY2,
+        edges[handsY1:handsY2, handsX1:handsX2] = roiEdges
+        overlay = buildOverlay(frame, gray, edges, stringLines, colors, handsY1, handsY2,
                               videoPath=videoPath, frameIdx=currentFrame, algoDetector=algoDetector)
         isSuspect = currentFrame in suspectsByFrame
         suspectedStrings = suspectsByFrame.get(currentFrame, [])

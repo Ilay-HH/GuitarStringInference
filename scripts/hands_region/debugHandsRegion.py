@@ -18,7 +18,7 @@ except ImportError:
         from ._string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
     except ImportError:
         from _string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
-from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange, detectHandsRegion
+from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange, detectHandsRegion, getRoiVerticalBounds
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
         if not ret:
             continue
         h, w = frame.shape[:2]
-        roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
+        roiY1, roiY2 = getRoiVerticalBounds(h)
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if stringLines is None:
