@@ -120,7 +120,7 @@ def buildOverlay(frame, gray, edges, stringLines, colors, roiY1=None, roiY2=None
         if roiY2 is None:
             roiY2 = ry2
     if handsBbox is None and algoDetector is not None:
-        handsBbox = algoDetector.detect(frame, gray, stringLines, roiY1, roiY2, h, w)
+        handsBbox = algoDetector.detect(frame, gray, roiY1, roiY2, h, w, stringLines)
     if handsBbox is None and videoPath is not None and frameIdx is not None:
         handsBbox = getHandsBbox(videoPath, frameIdx, h, w)
     if handsBbox is not None:

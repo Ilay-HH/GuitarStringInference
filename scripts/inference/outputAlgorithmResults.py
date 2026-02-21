@@ -43,7 +43,7 @@ def main():
         stringLines = fallbackStringLines(h, w, 6, handsY1, handsY2)
         handsX1, handsY1, handsX2, handsY2 = 0, int(h * 0.2), w, int(h * 0.8)
     else:
-        bbox = getProcessingRoi(first, gray, h, w, stringLines)
+        bbox = getProcessingRoi(first, gray, h, w)
         handsX1, handsY1, handsX2, handsY2 = bbox
 
     colors = [
@@ -67,7 +67,7 @@ def main():
         fullEdges[handsY1:handsY2, handsX1:handsX2] = roiEdges
         coloredEdges = colorEdgesByString(fullEdges, stringLines, colors)
 
-        bbox = detectHandsRegionForFrame(frame, gray, stringLines, handsY1, handsY2, h, w, detector=detector)
+        bbox = detectHandsRegionForFrame(frame, gray, handsY1, handsY2, h, w, stringLines, detector=detector)
         xLo, yLo, xHi, yHi = bbox
 
         overlay = cv2.convertScaleAbs(frame, alpha=0.5, beta=0)

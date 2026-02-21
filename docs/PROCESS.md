@@ -12,11 +12,15 @@ When a guitar string is played, it vibrates at high speed. This motion causes **
 
 ## Pipeline Overview
 
-1. **String Tracking** - Detect the 6 string positions and track edge intensity per string
-2. **Hands Region** - Find the relevant zone between the two hands (filter out fretting/strumming hands)
+1. **Hands Region** - Find the relevant zone between the two hands (filter out fretting/strumming hands). Used first to define the ROI.
+2. **String Tracking** - Detect the 6 string positions within the hands region ROI; track edge intensity per string
 3. **Suspect Detection** - Scan video for frames where edge intensity drops (within the relevant zone)
 4. **Annotation** - Human validates/corrects suspects and tags missed frames
 5. **Evaluation** (future) - Compare algorithm output to annotations
+
+### Hands-First Flow
+
+We use hands_region to define the processing ROI *before* string detection. Flow: (1) Get bbox from skin detection in config-defined vertical search area; (2) Crop to that bbox; (3) Run Canny + Hough to detect strings; (4) When strings are found, refine ROI height to the actual string span. This ensures we only process the relevant fretboard area from the start.
 
 ---
 
@@ -30,9 +34,9 @@ We use the first frame to locate the 6 strings. The process:
 
 ![Original frame](images/string_tracking/01_original.png)
 
-#### Step 2: Region of Interest
+#### Step 2: Region of Interest (Hands-First)
 
-Define the fretboard area via `config/hands_region.json` (`roi_height`, `roi_width`). Use `"auto"` to let hands_region detect the zone between hands, or `[minFrac, maxFrac]` for fixed fractions (default 20%-80%). We crop to this region before edge detection.
+We use hands_region to define the ROI *before* string detection. `getProcessingRoi` returns the bbox: when `roi_width` is `"auto"`, skin detection finds the x-range (low skin = between hands); when `roi_height` is `"auto"`, we use config fractions for the search area. After string detection, we refine the height to the actual string span (string 1 to 6 at mid-x with padding). Config: `config/hands_region.json` (`roi_height`, `roi_width`). Use `"auto"` or `[minFrac, maxFrac]` for fixed fractions.
 
 ![ROI marked on frame](images/string_tracking/02_roi_marked.png)
 
@@ -66,6 +70,10 @@ Run `cv2.HoughLinesP` on the cropped edges to find line segments. We keep lines 
 #### Iteration: Angled Strings
 
 **Originally** we assumed strings were strictly horizontal. **Changed** because the camera angle or fretboard perspective often makes strings appear at a slight angle. We now use `detectStringLinesAngled` which allows lines up to 35 degrees from horizontal and returns full line segments `(x1,y1,x2,y2)` instead of just y-positions.
+
+#### Iteration: Hands-First ROI
+
+**Originally** we used a fixed 20%-80% vertical ROI for string detection, then applied hands_region to filter the x-range for intensity tracking. **Changed** to use hands_region first: `detectStringLinesInHandsRegion` calls `getProcessingRoi` (skin-based bbox) to crop the frame, runs Canny and Hough on that crop, then refines the ROI height from the detected strings. This reduces noise and focuses string detection on the relevant zone from the start.
 
 ---
 
@@ -103,12 +111,9 @@ The hands (fretting and strumming) occlude parts of the strings. Edge intensity 
 
 ### Algorithm
 
-Two signals are combined:
+**Skin detection (width)** - Hands have high skin density. Columns with low skin fraction = between hands. We find the longest contiguous run of low-skin columns, stretch left and right (`leftStretchFrac`, `rightStretchFrac`) to better match hand positions, and apply per-frame temporal smoothing (exponential moving average). No per-video calibration required.
 
-1. **Skin detection** - Hands have high skin density. Columns with low skin fraction = between hands.
-2. **String visibility** - Columns where all 6 strings have strong edges = between hands (strings visible, not occluded).
-
-When both succeed, we use their intersection; otherwise the longer run. We then stretch left and right to better match hand positions. Per-frame detection with temporal smoothing (exponential moving average). No per-video calibration required.
+**Height refinement (when strings available)** - The vertical bounds come from config (`roi_height_fixed` when `"auto"`). When string lines are detected, we refine y1/y2 to the span of string 1 and 6 at mid-x, with `stringHeightPadding` for margin. This tightens the ROI to the actual fretboard.
 
 ![Algorithm-detected used region with colored edges](images/hands_region/02_algorithm_region.png)
 
@@ -120,10 +125,6 @@ We convert the frame to HSV and threshold for skin tones: Hue 0-20 (red/orange r
 
 Top to bottom: original frame; skin mask overlay (red = skin); skin density per column (low = between hands); string visibility per column (high = between hands). Yellow box = algorithm-detected used region.
 
-### String Visibility
-
-For each column, we sample the vertical Sobel gradient along all 6 string lines. The minimum across strings gives the weakest string visibility at that x. Columns above `stringMinFrac` of the peak are "good." We take the longest run of good columns, preferring runs near frame center.
-
 ### Fine Tuning
 
 Parameters in `config/hands_region.json`:
@@ -134,13 +135,20 @@ Parameters in `config/hands_region.json`:
 | `roi_width` | "auto" | `"auto"` = use hands_region; `[minFrac, maxFrac]` = fixed horizontal bounds |
 | `roi_height_fixed` | [0.2, 0.8] | Fallback when roi_height is "auto" (search area for skin) |
 | `roi_width_fixed` | [0.2, 0.8] | Fallback when roi_width is "auto" |
-| `stringHeightPadding` | 0.15 | Padding around string-based height when refining bbox |
 | `skinFracThresh` | 0.30 | Skin fraction threshold; columns below = between hands |
 | `minRunFrac` | 0.08 | Minimum run length as fraction of frame width |
 | `leftStretchFrac` | 0.30 | Extend detected left edge outward by this fraction of width |
 | `rightStretchFrac` | 0.10 | Extend detected right edge outward |
 | `smoothingAlpha` | 0.70 | Temporal smoothing (higher = less smoothing) |
-| `stringMinFrac` | 0.40 | String visibility threshold as fraction of peak |
+| `stringHeightPadding` | 0.15 | Padding around string span when refining height |
+
+### Iterations
+
+| Change | Reason |
+|--------|--------|
+| Skin + string visibility -> Skin-only width | String visibility often failed; skin detection alone gave good x-range |
+| Kept string-based height refinement | Height from config fractions (20%-80%) was too tall; strings tighten to actual fretboard |
+| Fixed ROI first -> Hands-first flow | Use hands_region bbox before string detection; crop then detect; refine height from strings |
 
 Filtering to the relevant zone improves suspect detection:
 

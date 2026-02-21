@@ -18,7 +18,7 @@ except ImportError:
         from ._string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
     except ImportError:
         from _string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
-from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange, detectHandsRegion, getRoiVerticalBounds
+from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange, detectHandsRegionSkinOnly, getRoiVerticalBounds, _refineHeightFromStrings
 
 
 def main():
@@ -86,7 +86,8 @@ def main():
             good = sum(1 for s in rawScores if s >= peak * 0.5)
             print(f"  String visibility: peak={peak:.1f} good@0.5={good} w//6={w//6}")
 
-        bbox = detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w)
+        bbox = detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w)
+        bbox = _refineHeightFromStrings(bbox, stringLines, roiY1, roiY2)
         skinDensity = []
         for x in range(0, w, 4):
             col = skinRoi[:, max(0, x - 4):min(w, x + 5)]

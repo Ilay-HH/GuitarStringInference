@@ -13,13 +13,6 @@ _PROJECT_ROOT = _THIS_DIR.parent.parent
 PROJECT_ROOT = _PROJECT_ROOT if (_PROJECT_ROOT / "config").exists() else _THIS_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-try:
-    from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
-except ImportError:
-    try:
-        from ._string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
-    except ImportError:
-        from _string_utils import detectStringLinesAngled, findVisibleXRange, fallbackStringLines
 from scripts.hands_region.handsRegionDetector import getSkinMask, findLowSkinXRange, getRoiVerticalBounds
 
 
@@ -48,43 +41,17 @@ def getGtBbox(entries, frameIdx, videoKey):
     return tuple(entries[-1]["bbox"])
 
 
-def detectWithParams(frame, gray, stringLines, roiY1, roiY2, h, w, params):
+def detectWithParams(frame, gray, roiY1, roiY2, h, w, params):
     skinFracThresh = params.get("skinFracThresh", 0.25)
     minRunFrac = params.get("minRunFrac", 0.08)
     rightStretchFrac = params.get("rightStretchFrac", 0)
     leftStretchFrac = params.get("leftStretchFrac", 0)
-    useUnion = params.get("useUnion", False)
-    stringMinFrac = params.get("stringMinFrac", 0.4)
 
     skinMask = getSkinMask(frame, roiY1, roiY2)
-    xRangeSkin = findLowSkinXRange(skinMask, roiY1, roiY2, skinFracThresh=skinFracThresh, minRunFrac=minRunFrac)
-    xRangeStrings = findVisibleXRange(gray, stringLines, minFrac=stringMinFrac, minRunFrac=minRunFrac)
-
-    candidates = []
-    if xRangeSkin is not None:
-        candidates.append((xRangeSkin[0], xRangeSkin[1]))
-    if xRangeStrings is not None:
-        candidates.append((xRangeStrings[0], xRangeStrings[1]))
-
-    if not candidates:
+    xRange = findLowSkinXRange(skinMask, roiY1, roiY2, skinFracThresh=skinFracThresh, minRunFrac=minRunFrac)
+    if xRange is None:
         return None
-
-    if len(candidates) == 2 and not useUnion:
-        x1 = max(candidates[0][0], candidates[1][0])
-        x2 = min(candidates[0][1], candidates[1][1])
-        if x2 - x1 >= w * minRunFrac:
-            x1, x2 = x1, x2
-        else:
-            best = max(candidates, key=lambda c: c[1] - c[0])
-            x1, x2 = best[0], best[1]
-    else:
-        if useUnion and len(candidates) == 2:
-            x1 = min(candidates[0][0], candidates[1][0])
-            x2 = max(candidates[0][1], candidates[1][1])
-        else:
-            best = max(candidates, key=lambda c: c[1] - c[0])
-            x1, x2 = best[0], best[1]
-
+    x1, x2 = xRange
     x1 = max(0, int(x1 - w * leftStretchFrac))
     x2 = min(w, int(x2 + w * rightStretchFrac))
     return (x1, roiY1, x2, roiY2)
@@ -137,10 +104,6 @@ def main():
     h, w = first.shape[:2]
     roiY1, roiY2 = getRoiVerticalBounds(h)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-    roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
-    stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
-    if stringLines is None:
-        stringLines = fallbackStringLines(h, w, 6, roiY1, roiY2)
 
     calibFrames = sorted(set(e["frame"] for e in entries if e["video"] == videoKey))
     evalFrames = calibFrames + [int((a + b) / 2) for a, b in zip(calibFrames[:-1], calibFrames[1:])]
@@ -173,7 +136,7 @@ def main():
             gt = getGtBbox(entries, frameIdx, videoKey)
             if gt is None:
                 continue
-            pred = detectWithParams(frame, gray, stringLines, roiY1, roiY2, h, w, params)
+            pred = detectWithParams(frame, gray, roiY1, roiY2, h, w, params)
             if pred is None:
                 pred = (int(w * 0.2), roiY1, int(w * 0.8), roiY2)
             ious.append(iou(pred, gt))

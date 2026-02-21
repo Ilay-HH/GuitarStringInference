@@ -41,7 +41,7 @@ def computeIntensitiesOverVideo(videoPath, stringLines, numStrings=6, useAlgorit
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         if useAlgorithm and algoDetector:
-            bbox = algoDetector.detect(frame, gray, stringLines, roiY1, roiY2, h, w)
+            bbox = algoDetector.detect(frame, gray, roiY1, roiY2, h, w, stringLines)
             xRange = (bbox[0], bbox[2])
         else:
             xRange = None

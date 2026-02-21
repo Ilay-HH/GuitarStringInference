@@ -105,7 +105,7 @@ def detectStringLinesInHandsRegion(frame, gray, numStrings=6, roiY1=None, roiY2=
     """
     from scripts.hands_region.handsRegionDetector import getProcessingRoi
     h, w = gray.shape
-    bbox = getProcessingRoi(frame, gray, h, w, stringLines=None)
+    bbox = getProcessingRoi(frame, gray, h, w)
     x1, y1, x2, y2 = bbox
     roiCropped = gray[y1:y2, x1:x2]
     roiEdges = cv2.Canny(roiCropped, 50, 150)
@@ -265,7 +265,7 @@ def detectSuspects(videoPath, stringLines, numStrings=6, dropThreshold=0.18, bas
             continue
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         if useAlgorithm and algoDetector:
-            bbox = algoDetector.detect(frame, gray, stringLines, roiY1, roiY2, h, w)
+            bbox = algoDetector.detect(frame, gray, roiY1, roiY2, h, w, stringLines)
             xRange = (bbox[0], bbox[2])
         elif handsBboxGetter:
             bbox = handsBboxGetter(videoPath, frameIdx, h, w)

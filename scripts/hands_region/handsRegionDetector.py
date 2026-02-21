@@ -1,8 +1,7 @@
 """
 Automatic detection of the region between the two hands (used region) per frame.
-Combines skin detection (hands = high skin) with string visibility (between hands = strings visible).
+Uses skin detection: hands = high skin density, between hands = low skin.
 No per-video calibration required. Reads params from config/hands_region.json.
-Runnable standalone (uses _string_utils) or with string_tracking.
 """
 import cv2
 import json
@@ -17,11 +16,6 @@ if (_PROJECT_ROOT / "config").exists():
 else:
     PROJECT_ROOT = _THIS_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-
-try:
-    from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, findVisibleXRange
-except ImportError:
-    from ._string_utils import detectStringLinesAngled, findVisibleXRange
 
 CONFIG_PATH = PROJECT_ROOT / "config" / "hands_region.json"
 
@@ -86,54 +80,6 @@ def findLowSkinXRange(skinMask, roiY1, roiY2, sampleStep=4, skinFracThresh=None,
     return (int(left), int(right))
 
 
-def detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w,
-                     leftStretchFrac=None, rightStretchFrac=None):
-    """
-    Detect used region (between hands) from frame. Returns (x1, y1, x2, y2) or None.
-    """
-    cfg = loadConfig()
-    leftStretchFrac = leftStretchFrac if leftStretchFrac is not None else cfg.get("leftStretchFrac", 0.30)
-    rightStretchFrac = rightStretchFrac if rightStretchFrac is not None else cfg.get("rightStretchFrac", 0.10)
-    skinMask = getSkinMask(frame, roiY1, roiY2)
-    xRangeSkin = findLowSkinXRange(skinMask, roiY1, roiY2)
-    xRangeStrings = findVisibleXRange(gray, stringLines) if stringLines else None
-
-    candidates = []
-    if xRangeSkin is not None:
-        candidates.append((xRangeSkin[0], xRangeSkin[1]))
-    if xRangeStrings is not None:
-        candidates.append((xRangeStrings[0], xRangeStrings[1]))
-
-    if not candidates:
-        return None
-
-    if len(candidates) == 2:
-        interLeft = max(candidates[0][0], candidates[1][0])
-        interRight = min(candidates[0][1], candidates[1][1])
-        if interRight - interLeft >= w * 0.08:
-            x1, x2 = interLeft, interRight
-        else:
-            best = max(candidates, key=lambda c: c[1] - c[0])
-            x1, x2 = best[0], best[1]
-    else:
-        best = max(candidates, key=lambda c: c[1] - c[0])
-        x1, x2 = best[0], best[1]
-
-    x1 = max(0, int(x1 - w * leftStretchFrac))
-    x2 = min(w, int(x2 + w * rightStretchFrac))
-
-    y1, y2 = roiY1, roiY2
-    if stringLines and len(stringLines) >= 2:
-        padding = cfg.get("stringHeightPadding", 0.15)
-        midX = (x1 + x2) / 2
-        yTop = _yAtX(stringLines[0], midX)
-        yBot = _yAtX(stringLines[-1], midX)
-        pad = max(1, (yBot - yTop) * padding)
-        y1 = max(roiY1, int(yTop - pad))
-        y2 = min(roiY2, int(yBot + pad))
-    return (x1, y1, x2, y2)
-
-
 def _yAtX(line, x):
     x1, y1, x2, y2 = line
     if abs(x2 - x1) < 1e-6:
@@ -142,8 +88,24 @@ def _yAtX(line, x):
     return y1 + t * (y2 - y1)
 
 
+def _refineHeightFromStrings(bbox, stringLines, roiY1, roiY2):
+    """Refine y1,y2 from string span at mid-x. Returns (x1, y1, x2, y2)."""
+    if not stringLines or len(stringLines) < 2:
+        return bbox
+    cfg = loadConfig()
+    padding = cfg.get("stringHeightPadding", 0.15)
+    x1, y1, x2, y2 = bbox
+    midX = (x1 + x2) / 2
+    yTop = _yAtX(stringLines[0], midX)
+    yBot = _yAtX(stringLines[-1], midX)
+    pad = max(1, (yBot - yTop) * padding)
+    y1 = max(roiY1, int(yTop - pad))
+    y2 = min(roiY2, int(yBot + pad))
+    return (x1, y1, x2, y2)
+
+
 def detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w):
-    """Bbox from skin-only (no string visibility). Used when strings not yet available."""
+    """Bbox from skin detection: low skin density = between hands."""
     cfg = loadConfig()
     leftStretchFrac = cfg.get("leftStretchFrac", 0.30)
     rightStretchFrac = cfg.get("rightStretchFrac", 0.10)
@@ -171,7 +133,8 @@ def getRoiVerticalBounds(h, cfg=None):
 def getProcessingRoi(frame, gray, h, w, stringLines=None):
     """
     Resolve ROI from config. Returns (x1, y1, x2, y2).
-    roi_height/roi_width: "auto" uses hands_region; [minFrac, maxFrac] uses fixed fractions.
+    roi_height/roi_width: "auto" uses skin-based hands_region; [minFrac, maxFrac] uses fixed fractions.
+    stringLines: optional, when provided refines height to actual string span.
     """
     cfg = loadConfig()
     roiHeightCfg = cfg.get("roi_height", "auto")
@@ -188,18 +151,18 @@ def getProcessingRoi(frame, gray, h, w, stringLines=None):
         roiY2 = int(h * fracs[1])
 
     if roiWidthCfg == "auto":
-        if stringLines and len(stringLines) >= 6:
-            bbox = detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w)
-        else:
-            bbox = detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w)
+        bbox = detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w)
         if bbox is None:
             bbox = (int(w * widthFixed[0]), roiY1, int(w * widthFixed[1]), roiY2)
+        bbox = _refineHeightFromStrings(bbox, stringLines, roiY1, roiY2)
         return bbox
 
     fracs = roiWidthCfg if isinstance(roiWidthCfg, (list, tuple)) else widthFixed
     x1 = int(w * fracs[0])
     x2 = int(w * fracs[1])
-    return (x1, roiY1, x2, roiY2)
+    bbox = (x1, roiY1, x2, roiY2)
+    bbox = _refineHeightFromStrings(bbox, stringLines, roiY1, roiY2)
+    return bbox
 
 
 class HandsRegionDetector:
@@ -210,10 +173,11 @@ class HandsRegionDetector:
         self.alpha = alpha if alpha is not None else cfg.get("smoothingAlpha", 0.70)
         self.prevBbox = None
 
-    def detect(self, frame, gray, stringLines, roiY1, roiY2, h, w):
-        bbox = detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w)
+    def detect(self, frame, gray, roiY1, roiY2, h, w, stringLines=None):
+        bbox = detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w)
         if bbox is None:
             bbox = (int(w * 0.2), roiY1, int(w * 0.8), roiY2)
+        bbox = _refineHeightFromStrings(bbox, stringLines, roiY1, roiY2)
         if self.prevBbox is not None:
             smoothed = []
             for j in range(4):
@@ -224,11 +188,12 @@ class HandsRegionDetector:
         return bbox
 
 
-def detectHandsRegionForFrame(frame, gray, stringLines, roiY1, roiY2, h, w, detector=None):
+def detectHandsRegionForFrame(frame, gray, roiY1, roiY2, h, w, stringLines=None, detector=None):
     """Convenience: detect hands region, return bbox. Pass detector for temporal smoothing."""
     if detector is not None:
-        return detector.detect(frame, gray, stringLines, roiY1, roiY2, h, w)
-    bbox = detectHandsRegion(frame, gray, stringLines, roiY1, roiY2, h, w)
+        return detector.detect(frame, gray, roiY1, roiY2, h, w, stringLines)
+    bbox = detectHandsRegionSkinOnly(frame, roiY1, roiY2, h, w)
     if bbox is not None:
+        bbox = _refineHeightFromStrings(bbox, stringLines, roiY1, roiY2)
         return bbox
     return (int(w * 0.2), roiY1, int(w * 0.8), roiY2)
