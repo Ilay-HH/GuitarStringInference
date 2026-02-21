@@ -10,7 +10,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, fallbackStringLines
+from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, fallbackStringLines
 from scripts.inference.frameAnnotator import colorEdgesByString
 from scripts.hands_region.handsRegionDetector import detectHandsRegionForFrame, HandsRegionDetector
 
@@ -33,10 +33,16 @@ def main():
     h, w = first.shape[:2]
     roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-    roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
-    stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
+    result = detectStringLinesInHandsRegion(first, gray, 6, roiY1, roiY2, returnCrop=True)
+    stringLines, handsX1, handsX2 = result[0], result[1], result[2]
+    if stringLines is None:
+        roiEdges = result[4]
+        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
+        if stringLines is not None:
+            stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
     if stringLines is None:
         stringLines = fallbackStringLines(h, w, 6, roiY1, roiY2)
+        handsX1, handsX2 = 0, w
 
     colors = [
         (100, 100, 255), (50, 150, 255), (100, 255, 100),
@@ -53,9 +59,10 @@ def main():
         if not ret:
             break
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
+        roiCropped = gray[roiY1:roiY2, handsX1:handsX2]
+        roiEdges = cv2.Canny(roiCropped, 50, 150)
         fullEdges = np.zeros_like(gray)
-        fullEdges[roiY1:roiY2, :] = roiEdges
+        fullEdges[roiY1:roiY2, handsX1:handsX2] = roiEdges
         coloredEdges = colorEdgesByString(fullEdges, stringLines, colors)
 
         bbox = detectHandsRegionForFrame(frame, gray, stringLines, roiY1, roiY2, h, w, detector=detector)

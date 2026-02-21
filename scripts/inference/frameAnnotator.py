@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from scripts.string_tracking.stringEdgeTracker import (
     detectStringLinesAngled,
+    detectStringLinesInHandsRegion,
     detectSuspects,
     findVisibleXRange,
     shrinkToCenter,
@@ -151,11 +152,16 @@ def runAnnotator(videoPath, numStrings=6, outputPath=None, dropThreshold=0.18, u
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
     roiY1 = int(h * 0.2)
     roiY2 = int(h * 0.8)
-    roiGray = gray[roiY1:roiY2, :]
-    roiEdges = cv2.Canny(roiGray, 50, 150)
-    stringLines = detectStringLinesAngled(roiEdges, numStrings, 0, roiEdges.shape[0], yOffset=roiY1)
+    result = detectStringLinesInHandsRegion(first, gray, numStrings, roiY1, roiY2, returnCrop=True)
+    stringLines, handsX1, handsX2 = result[0], result[1], result[2]
+    if stringLines is None:
+        roiEdges = result[4]
+        stringLines = detectStringLinesAngled(roiEdges, numStrings, 0, roiEdges.shape[0], yOffset=roiY1)
+        if stringLines is not None:
+            stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
     if stringLines is None:
         stringLines = fallbackStringLines(h, w, numStrings, roiY1, roiY2)
+        handsX1, handsX2 = 0, w
     print("Scanning video for suspect frames...")
     algoDetector = HandsRegionDetector() if useAlgorithm else None
     suspects = detectSuspects(videoPath, stringLines, numStrings, dropThreshold=dropThreshold,
@@ -192,10 +198,10 @@ def runAnnotator(videoPath, numStrings=6, outputPath=None, dropThreshold=0.18, u
             currentFrame = max(0, min(currentFrame, totalFrames - 1))
             continue
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        roiGray = gray[roiY1:roiY2, :]
-        roiEdges = cv2.Canny(roiGray, 50, 150)
+        roiCropped = gray[roiY1:roiY2, handsX1:handsX2]
+        roiEdges = cv2.Canny(roiCropped, 50, 150)
         edges = np.zeros_like(gray)
-        edges[roiY1:roiY2, :] = roiEdges
+        edges[roiY1:roiY2, handsX1:handsX2] = roiEdges
         overlay = buildOverlay(frame, gray, edges, stringLines, colors, roiY1, roiY2,
                               videoPath=videoPath, frameIdx=currentFrame, algoDetector=algoDetector)
         isSuspect = currentFrame in suspectsByFrame

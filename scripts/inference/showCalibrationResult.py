@@ -9,7 +9,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, fallbackStringLines
+from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, fallbackStringLines
 from scripts.inference.frameAnnotator import colorEdgesByString
 from scripts.hands_region.handsCalibrator import getHandsBbox
 
@@ -33,7 +33,9 @@ def main():
     roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
     roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
-    stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
+    stringLines = detectStringLinesInHandsRegion(first, gray, 6, roiY1, roiY2)
+    if stringLines is None:
+        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
     if stringLines is None:
         stringLines = fallbackStringLines(h, w, 6, roiY1, roiY2)
     colors = [

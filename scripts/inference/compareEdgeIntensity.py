@@ -10,7 +10,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, computeEdgeIntensityForLine, fallbackStringLines
+from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, computeEdgeIntensityForLine, fallbackStringLines
 from scripts.hands_region.handsRegionDetector import HandsRegionDetector
 
 
@@ -76,8 +76,10 @@ def main():
     h, w = first.shape[:2]
     roiY1, roiY2 = int(h * 0.2), int(h * 0.8)
     gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-    roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
-    stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
+    stringLines = detectStringLinesInHandsRegion(first, gray, 6, roiY1, roiY2)
+    if stringLines is None:
+        roiEdges = cv2.Canny(gray[roiY1:roiY2, :], 50, 150)
+        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=roiY1)
     if stringLines is None:
         stringLines = fallbackStringLines(h, w, 6, roiY1, roiY2)
 
