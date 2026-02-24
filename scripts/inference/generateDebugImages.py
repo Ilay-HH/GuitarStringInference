@@ -38,6 +38,9 @@ def main():
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     result = detectStringLinesInHandsRegion(frame, gray, 6, returnCrop=True)
     stringLines, handsX1, handsY1, handsX2, handsY2, roiGray, roiEdges = result
+    # keep detection-time roi for 05_hough_lines (before bbox is refined below)
+    detectionRoiEdges = roiEdges
+    detectionY1 = handsY1
     if stringLines is None:
         stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=handsY1)
         if stringLines is not None:
@@ -47,6 +50,8 @@ def main():
         handsX1, handsY1, handsX2, handsY2 = 0, int(h * 0.2), w, int(h * 0.8)
         roiGray = gray[handsY1:handsY2, :]
         roiEdges = cv2.Canny(roiGray, 50, 150)
+        detectionRoiEdges = roiEdges
+        detectionY1 = handsY1
     else:
         bbox = getProcessingRoi(frame, gray, h, w, stringLines)
         handsX1, handsY1, handsX2, handsY2 = bbox
@@ -63,13 +68,23 @@ def main():
     cv2.imwrite(str(outDir / "02_roi_marked.png"), roiRect)
     cv2.imwrite(str(outDir / "03_roi_grayscale.png"), roiGray)
     cv2.imwrite(str(outDir / "04_canny_edges.png"), roiEdges)
-    lines = cv2.HoughLinesP(roiEdges, rho=1, theta=np.pi / 180, threshold=50,
-                            minLineLength=max(roiEdges.shape[1] // 4, 50), maxLineGap=25)
-    houghVis = cv2.cvtColor(roiEdges, cv2.COLOR_GRAY2BGR)
+    lines = cv2.HoughLinesP(detectionRoiEdges, rho=1, theta=np.pi / 180, threshold=50,
+                            minLineLength=max(detectionRoiEdges.shape[1] // 4, 50), maxLineGap=25)
+    houghVis = cv2.cvtColor(detectionRoiEdges, cv2.COLOR_GRAY2BGR)
     if lines is not None:
         for line in lines:
             x1, y1, x2, y2 = line[0]
             cv2.line(houghVis, (x1, y1), (x2, y2), (0, 255, 255), 1)
+    _, dbgInfo = detectStringLinesAngled(detectionRoiEdges, 6, 0, detectionRoiEdges.shape[0], yOffset=detectionY1, returnDebug=True)
+    for members in dbgInfo.get('selected_members', []):
+        # members have x in ROI-local space, y in full-frame space (yOffset was applied)
+        avgX1 = int(np.mean([l[0] for l in members]))
+        avgY1 = int(np.mean([l[1] for l in members])) - detectionY1
+        avgX2 = int(np.mean([l[2] for l in members]))
+        avgY2 = int(np.mean([l[3] for l in members])) - detectionY1
+        # green = string line coincides with a single Hough line; blue = averaged from multiple
+        color = (0, 255, 0) if len(members) == 1 else (255, 100, 0)
+        cv2.line(houghVis, (avgX1, avgY1), (avgX2, avgY2), color, 2)
     cv2.imwrite(str(outDir / "05_hough_lines.png"), houghVis)
     linesVis = frame.copy()
     for i, (x1, y1, x2, y2) in enumerate(stringLines):
