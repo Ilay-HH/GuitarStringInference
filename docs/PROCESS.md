@@ -71,6 +71,10 @@ Run `cv2.HoughLinesP` on the cropped edges to find line segments. We keep lines 
 
 **Originally** we assumed strings were strictly horizontal. **Changed** because the camera angle or fretboard perspective often makes strings appear at a slight angle. We now use `detectStringLinesAngled` which allows lines up to 35 degrees from horizontal and returns full line segments `(x1,y1,x2,y2)` instead of just y-positions.
 
+#### Iteration: Angle-Aware Minimum Line Length
+
+**Originally** `minLineLength` was hardcoded to `roi_width // 4` regardless of string angle. **Problem**: for a line at angle theta, a segment of Euclidean length L covers only `L * cos(theta)` pixels in the horizontal direction. Using a fixed horizontal-coverage-based minLineLength is therefore too strict at higher angles — short edge segments near the hand start get rejected because they do not reach the minimum even though they represent the same horizontal coverage as a longer horizontal segment would. **Insight**: the minimum required Euclidean length should scale with `cos(theta)` to preserve an equivalent horizontal coverage requirement across all angles. **Changed** to a two-pass approach: a preliminary loose Hough pass (`threshold=30`, `minLineLength=roi_width//8`) estimates the median dominant angle of string candidates; the main Hough pass then uses `minLineLength = max(roi_width//8, roi_width//4 * cos(angle))`. For nearly-horizontal strings (1-3 deg) the change is negligible; for more angled setups (15-35 deg) it meaningfully reduces the requirement and allows shorter left-start edge segments to be detected.
+
 #### Iteration: Hands-First ROI
 
 **Originally** we used a fixed 20%-80% vertical ROI for string detection, then applied hands_region to filter the x-range for intensity tracking. **Changed** to use hands_region first: `detectStringLinesInHandsRegion` calls `getProcessingRoi` (skin-based bbox) to crop the frame, runs Canny and Hough on that crop, then refines the ROI height from the detected strings. This reduces noise and focuses string detection on the relevant zone from the start.

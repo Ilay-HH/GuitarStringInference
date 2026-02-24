@@ -43,15 +43,40 @@ def detectStringLines(edgeImg, numStrings=6, roiY1=0, roiY2=None):
     return None
 
 
+def _estimateDominantAngle(roi, maxAngleDeg):
+    """Pass-1 Hough with loose params to estimate the dominant string angle in degrees.
+
+    minLineLength is intentionally short so short start-of-string segments are captured.
+    Returns the median angle of all near-horizontal candidates.
+    """
+    w = roi.shape[1]
+    lines = cv2.HoughLinesP(roi, rho=1, theta=np.pi / 180, threshold=30,
+                            minLineLength=w // 8, maxLineGap=30)
+    if lines is None:
+        return 0.0
+    angles = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle_deg = abs(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+        if angle_deg > 90:
+            angle_deg = 180 - angle_deg
+        if angle_deg <= maxAngleDeg:
+            angles.append(angle_deg)
+    return float(np.median(angles)) if angles else 0.0
+
+
 def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngleDeg=35, yOffset=None, returnDebug=False):
     """Find string lines via Hough with pair-clustering and x-start filtering.
 
     Assumes Hough outputs two lines per string (top and bottom edge). Clusters nearby
     lines by y at mid-x to merge each pair into one representative line, then filters
     out clusters that start too far right (neck edges start later than string lines).
+
+    minLineLength scales with cos(dominantAngle): the same horizontal coverage corresponds
+    to a shorter Euclidean segment at steeper angles. Base w//4 preserves existing behavior
+    for near-horizontal strings; the correction only meaningfully kicks in above ~15 deg.
     """
     CLUSTER_DIST = 15
-    X_START_MAX_FRAC = 0.5
 
     if roiY2 is None:
         roiY2 = edgeImg.shape[0]
@@ -59,9 +84,19 @@ def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngle
         yOffset = roiY1
     h, w = edgeImg.shape
     roi = edgeImg[roiY1:roiY2, :]
+
+    # Pass 1: estimate dominant angle so minLineLength can account for it.
+    # Base w//4 preserves existing behavior for near-horizontal strings; cos(angle)
+    # reduces the requirement at steeper angles where the same horizontal coverage
+    # corresponds to a shorter Euclidean segment.
+    dominantAngleDeg = _estimateDominantAngle(roi, maxAngleDeg)
+    minLineLength = max(roi.shape[1] // 8,
+                        int(roi.shape[1] // 4 * np.cos(np.radians(dominantAngleDeg))))
+
+    # Pass 2: main detection with angle-corrected minLineLength.
     lines = cv2.HoughLinesP(
         roi, rho=1, theta=np.pi / 180, threshold=50,
-        minLineLength=roi.shape[1] // 4, maxLineGap=25
+        minLineLength=minLineLength, maxLineGap=25
     )
     empty_debug = {'hough_candidates': [], 'selected_members': []}
     if lines is None:
@@ -102,26 +137,51 @@ def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngle
 
     merged = []
     for cluster in clusters:
-        avg_x1 = int(np.mean([l[0] for l in cluster]))
-        avg_y1 = int(np.mean([l[1] for l in cluster]))
-        avg_x2 = int(np.mean([l[2] for l in cluster]))
-        avg_y2 = int(np.mean([l[3] for l in cluster]))
-        x_start = min(min(l[0], l[2]) for l in cluster)
-        merged.append({'line': (avg_x1, avg_y1, avg_x2, avg_y2), 'x_start': x_start, 'members': cluster})
+        # Fit a regression line through all member endpoints so the representative line
+        # spans the full cluster x-range and reflects the piecewise center.
+        pts_x = np.array([l[0] for l in cluster] + [l[2] for l in cluster], dtype=float)
+        pts_y = np.array([l[1] for l in cluster] + [l[3] for l in cluster], dtype=float)
+        x_start = int(pts_x.min())
+        x_end = int(pts_x.max())
+        if x_end > x_start:
+            slope_r, intercept_r = np.linalg.lstsq(
+                np.column_stack([pts_x, np.ones(len(pts_x))]), pts_y, rcond=None)[0]
+            rep_line = (x_start, int(slope_r * x_start + intercept_r),
+                        x_end,   int(slope_r * x_end   + intercept_r))
+        else:
+            rep_line = (x_start, int(pts_y.mean()), x_end, int(pts_y.mean()))
+        merged.append({'line': rep_line, 'x_start': x_start, 'members': cluster})
 
-    # Strings start earlier on x-axis than guitar neck edges; keep early-starting clusters.
-    x_threshold = w * X_START_MAX_FRAC
-    filtered = [m for m in merged if m['x_start'] <= x_threshold]
-    if len(filtered) < numStrings:
-        filtered = merged
-
-    filtered.sort(key=lambda m: heightAtMid(*m['line']))
-    n = len(filtered)
+    # Soft x-start selection: divide the y-range into numStrings evenly-spaced slots;
+    # within each slot prefer the cluster whose members begin earliest on the x-axis.
+    # This naturally rejects late-starting neck-edge clusters without a hard threshold.
+    merged.sort(key=lambda m: heightAtMid(*m['line']))
+    n = len(merged)
     if n < numStrings:
         return (None, {'hough_candidates': candidates, 'selected_members': []}) if returnDebug else None
 
-    indices = [int(i * (n - 1) / (numStrings - 1)) for i in range(numStrings)] if numStrings > 1 else [0]
-    selected = [filtered[i] for i in indices]
+    y_vals = [heightAtMid(*m['line']) for m in merged]
+    y_min, y_max = y_vals[0], y_vals[-1]
+    slot_h = (y_max - y_min) / max(numStrings - 1, 1)
+
+    selected = []
+    used = set()
+    for i in range(numStrings):
+        target_y = y_min + slot_h * i
+        nearby = [(j, merged[j]) for j in range(n)
+                  if j not in used and abs(y_vals[j] - target_y) <= slot_h * 0.7]
+        if not nearby:
+            nearby = [(j, merged[j]) for j in range(n) if j not in used]
+        if not nearby:
+            break
+        j_best, m_best = min(nearby, key=lambda jm: jm[1]['x_start'])
+        selected.append(m_best)
+        used.add(j_best)
+
+    if len(selected) < numStrings:
+        return (None, {'hough_candidates': candidates, 'selected_members': []}) if returnDebug else None
+
+    selected.sort(key=lambda m: heightAtMid(*m['line']))
     result = [m['line'] for m in selected]
 
     if returnDebug:

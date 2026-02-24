@@ -10,7 +10,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, fallbackStringLines
+from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, fallbackStringLines, _estimateDominantAngle
 from scripts.hands_region.handsRegionDetector import getProcessingRoi
 from scripts.inference.frameAnnotator import colorEdgesByString
 
@@ -68,8 +68,11 @@ def main():
     cv2.imwrite(str(outDir / "02_roi_marked.png"), roiRect)
     cv2.imwrite(str(outDir / "03_roi_grayscale.png"), roiGray)
     cv2.imwrite(str(outDir / "04_canny_edges.png"), roiEdges)
+    _angle = _estimateDominantAngle(detectionRoiEdges, 35)
+    _minLen = max(detectionRoiEdges.shape[1] // 8,
+                  int(detectionRoiEdges.shape[1] // 4 * np.cos(np.radians(_angle))))
     lines = cv2.HoughLinesP(detectionRoiEdges, rho=1, theta=np.pi / 180, threshold=50,
-                            minLineLength=max(detectionRoiEdges.shape[1] // 4, 50), maxLineGap=25)
+                            minLineLength=_minLen, maxLineGap=25)
     houghVis = cv2.cvtColor(detectionRoiEdges, cv2.COLOR_GRAY2BGR)
     if lines is not None:
         for line in lines:
@@ -77,14 +80,29 @@ def main():
             cv2.line(houghVis, (x1, y1), (x2, y2), (0, 255, 255), 1)
     _, dbgInfo = detectStringLinesAngled(detectionRoiEdges, 6, 0, detectionRoiEdges.shape[0], yOffset=detectionY1, returnDebug=True)
     for members in dbgInfo.get('selected_members', []):
-        # members have x in ROI-local space, y in full-frame space (yOffset was applied)
-        avgX1 = int(np.mean([l[0] for l in members]))
-        avgY1 = int(np.mean([l[1] for l in members])) - detectionY1
-        avgX2 = int(np.mean([l[2] for l in members]))
-        avgY2 = int(np.mean([l[3] for l in members])) - detectionY1
-        # green = string line coincides with a single Hough line; blue = averaged from multiple
+        # Build one polyline per cluster: at each x, average only the member lines that
+        # are active (cover that x). Where a single early line exists alone it is followed
+        # exactly; once a second edge appears the line transitions to their midpoint.
+        # green = single member; blue = cluster merged from multiple Hough lines.
         color = (0, 255, 0) if len(members) == 1 else (255, 100, 0)
-        cv2.line(houghVis, (avgX1, avgY1), (avgX2, avgY2), color, 2)
+        spans = [(min(l[0], l[2]), max(l[0], l[2])) for l in members]
+        xs_sorted = sorted({x for xs, xe in spans for x in (xs, xe)})
+
+        def _y_at(line, x):
+            x1, y1, x2, y2 = line
+            if abs(x2 - x1) < 1:
+                return (y1 + y2) / 2.0
+            return y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+
+        pts = []
+        for x in xs_sorted:
+            active_ys = [_y_at(l, x) - detectionY1
+                         for l, (xs, xe) in zip(members, spans) if xs <= x <= xe]
+            if active_ys:
+                pts.append((x, int(np.mean(active_ys))))
+
+        for i in range(len(pts) - 1):
+            cv2.line(houghVis, pts[i], pts[i + 1], color, 2)
     cv2.imwrite(str(outDir / "05_hough_lines.png"), houghVis)
     linesVis = frame.copy()
     for i, (x1, y1, x2, y2) in enumerate(stringLines):
