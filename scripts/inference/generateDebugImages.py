@@ -37,22 +37,28 @@ def main():
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     result = detectStringLinesInHandsRegion(frame, gray, 6, returnCrop=True)
-    stringLines, handsX1, handsY1, handsX2, handsY2, roiGray, roiEdges = result
-    # keep detection-time roi for 05_hough_lines (before bbox is refined below)
+    _initLines, handsX1, handsY1, handsX2, handsY2, roiGray, roiEdges = result
+    # Single authoritative detection call: returnDebug=True gives us both the
+    # string lines AND the cluster debug info so 05 and 06 are always in sync.
     detectionRoiEdges = roiEdges
     detectionY1 = handsY1
-    if stringLines is None:
-        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=handsY1)
-        if stringLines is not None:
-            stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
-    if stringLines is None:
+    _roiResult, dbgInfo = detectStringLinesAngled(
+        detectionRoiEdges, 6, 0, detectionRoiEdges.shape[0],
+        yOffset=detectionY1, returnDebug=True)
+    if _roiResult is not None:
+        # Convert ROI-local x back to full-frame x
+        stringLines = [
+            (l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in _roiResult
+        ]
+    else:
         stringLines = fallbackStringLines(h, w, 6, handsY1, handsY2)
         handsX1, handsY1, handsX2, handsY2 = 0, int(h * 0.2), w, int(h * 0.8)
         roiGray = gray[handsY1:handsY2, :]
         roiEdges = cv2.Canny(roiGray, 50, 150)
         detectionRoiEdges = roiEdges
         detectionY1 = handsY1
-    else:
+        dbgInfo = {'hough_candidates': [], 'selected_members': [], 'outer_refined': []}
+    if _roiResult is not None:
         bbox = getProcessingRoi(frame, gray, h, w, stringLines)
         handsX1, handsY1, handsX2, handsY2 = bbox
         roiGray = gray[handsY1:handsY2, handsX1:handsX2]
@@ -75,19 +81,134 @@ def main():
         for line in lines:
             x1, y1, x2, y2 = line[0]
             cv2.line(houghVis, (x1, y1), (x2, y2), (0, 255, 255), 1)
-    _, dbgInfo = detectStringLinesAngled(detectionRoiEdges, 6, 0, detectionRoiEdges.shape[0], yOffset=detectionY1, returnDebug=True)
-    for members in dbgInfo.get('selected_members', []):
-        # members have x in ROI-local space, y in full-frame space (yOffset was applied)
-        avgX1 = int(np.mean([l[0] for l in members]))
-        avgY1 = int(np.mean([l[1] for l in members])) - detectionY1
-        avgX2 = int(np.mean([l[2] for l in members]))
-        avgY2 = int(np.mean([l[3] for l in members])) - detectionY1
-        # green = string line coincides with a single Hough line; blue = averaged from multiple
-        color = (0, 255, 0) if len(members) == 1 else (255, 100, 0)
-        cv2.line(houghVis, (avgX1, avgY1), (avgX2, avgY2), color, 2)
+    x_ref = dbgInfo.get('inner_x_ref')
+    if x_ref is not None:
+        cv2.line(houghVis, (x_ref, 0), (x_ref, houghVis.shape[0] - 1), (0, 0, 255), 1)
+        cv2.putText(houghVis, f"x={x_ref}", (x_ref + 3, 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+        if lines is not None:
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                xs, xe = min(x1, x2), max(x1, x2)
+                if xs <= x_ref <= xe:
+                    t = (x_ref - x1) / (x2 - x1) if abs(x2 - x1) > 0 else 0.5
+                    iy = int(y1 + t * (y2 - y1))
+                    cv2.circle(houghVis, (x_ref, iy), 3, (0, 0, 255), -1)
     cv2.imwrite(str(outDir / "05_hough_lines.png"), houghVis)
+
+    # 05b: pair each hit line with its string-edge partner and draw midpoint string lines
+    _PAIR_DIST = 20  # max y-gap between the two edges of one string
+
+    def _y_at(seg, x):
+        x1, y1, x2, y2 = seg
+        xs, xe = min(x1, x2), max(x1, x2)
+        if x < xs or x > xe:
+            return None
+        if abs(x2 - x1) < 1:
+            return (y1 + y2) / 2.0
+        return y1 + (y2 - y1) * (x - x1) / (x2 - x1)
+
+    # Angle-filtered candidates in ROI-local coords
+    _MAX_ANGLE = 35
+    acands = []
+    if lines is not None:
+        for seg in lines:
+            x1, y1, x2, y2 = seg[0]
+            ang = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+            if abs(ang) <= _MAX_ANGLE or abs(abs(ang) - 180) <= _MAX_ANGLE:
+                acands.append((x1, y1, x2, y2))
+
+    # Lines that span x_ref, sorted by y there
+    hit = []
+    if x_ref is not None:
+        for idx, l in enumerate(acands):
+            y = _y_at(l, x_ref)
+            if y is not None:
+                hit.append((y, idx))
+        hit.sort(key=lambda t: t[0])
+
+    used_idx = set()
+    string_segs = []
+
+    for y_i, idx_i in hit:
+        if idx_i in used_idx:
+            continue
+        l_i = acands[idx_i]
+        xe_i = max(l_i[0], l_i[2])
+        best_jdx = None
+        best_pair_x = None
+
+        for jdx, l_j in enumerate(acands):
+            if jdx == idx_i or jdx in used_idx:
+                continue
+            xs_j = min(l_j[0], l_j[2])
+            xe_j = max(l_j[0], l_j[2])
+            scan_start = max(x_ref, xs_j)
+            scan_end = min(xe_i, xe_j)
+            if scan_start > scan_end:
+                continue
+            ya_s = _y_at(l_i, scan_start)
+            yb_s = _y_at(l_j, scan_start)
+            if ya_s is None or yb_s is None:
+                continue
+            d_s = abs(ya_s - yb_s)
+            if d_s <= _PAIR_DIST:
+                pair_x = scan_start
+            else:
+                ya_e = _y_at(l_i, scan_end)
+                yb_e = _y_at(l_j, scan_end)
+                if ya_e is None or yb_e is None:
+                    continue
+                d_e = abs(ya_e - yb_e)
+                if d_e >= d_s or d_e > _PAIR_DIST:
+                    continue
+                frac = (d_s - _PAIR_DIST) / (d_s - d_e)
+                pair_x = int(scan_start + frac * (scan_end - scan_start))
+            if best_pair_x is None or pair_x < best_pair_x:
+                best_pair_x = pair_x
+                best_jdx = jdx
+
+        if best_jdx is not None:
+            used_idx.add(idx_i)
+            used_idx.add(best_jdx)
+            string_segs.append((l_i, acands[best_jdx], y_i))
+
+    _pair_colors = [
+        (0, 255, 0), (0, 165, 255), (0, 0, 255),
+        (255, 0, 255), (0, 255, 255), (255, 128, 0),
+        (128, 0, 255), (0, 200, 100), (200, 200, 0), (255, 0, 128),
+    ]
+    # Build midpoint lines in ROI-local coords, then convert to full-frame
+    # Each midpoint line: from x_ref (on l_i) to end of pair overlap
+    pairMidLines = []
+    for la, lb, y_hit in string_segs:
+        xe_a = max(la[0], la[2])
+        xe_b = max(lb[0], lb[2])
+        end_x = min(xe_a, xe_b)
+        ya_end = _y_at(la, end_x)
+        yb_end = _y_at(lb, end_x)
+        if ya_end is None or yb_end is None:
+            continue
+        mid_y_end = (ya_end + yb_end) / 2.0
+        # Convert ROI-local -> full-frame
+        fx1 = x_ref + handsX1
+        fy1 = int(y_hit) + detectionY1
+        fx2 = end_x + handsX1
+        fy2 = int(mid_y_end) + detectionY1
+        pairMidLines.append((fx1, fy1, fx2, fy2))
+
+    pairVis = houghVis.copy()
+    for pi, (la, lb, _) in enumerate(string_segs):
+        col = _pair_colors[pi % len(_pair_colors)]
+        x1a, y1a, x2a, y2a = la
+        x1b, y1b, x2b, y2b = lb
+        cv2.line(pairVis, (x1a, y1a), (x2a, y2a), col, 2)
+        cv2.line(pairVis, (x1b, y1b), (x2b, y2b), col, 2)
+    cv2.imwrite(str(outDir / "05b_string_pairs.png"), pairVis)
+
+    drawLines = pairMidLines if len(pairMidLines) == len(colors) else stringLines
     linesVis = frame.copy()
-    for i, (x1, y1, x2, y2) in enumerate(stringLines):
+    for i, (x1, y1, x2, y2) in enumerate(drawLines):
         cv2.line(linesVis, (int(x1), int(y1)), (int(x2), int(y2)), colors[i], 2)
         cv2.putText(linesVis, str(i + 1), (int(x1) + 5, int(y1) - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colors[i], 2)
@@ -138,7 +259,7 @@ def main():
     docsDir.mkdir(parents=True, exist_ok=True)
     generated = [
         "01_original.png", "02_roi_marked.png", "03_roi_grayscale.png", "04_canny_edges.png",
-        "05_hough_lines.png", "06_string_lines.png", "07_band_boundaries.png",
+        "05_hough_lines.png", "05b_string_pairs.png", "06_string_lines.png", "07_band_boundaries.png",
         "08_colored_edges.png", "09_final_overlay.png"
     ]
     for name in generated:

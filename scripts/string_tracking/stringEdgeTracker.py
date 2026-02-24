@@ -122,10 +122,16 @@ def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngle
 
     indices = [int(i * (n - 1) / (numStrings - 1)) for i in range(numStrings)] if numStrings > 1 else [0]
     selected = [filtered[i] for i in indices]
-    result = [m['line'] for m in selected]
 
+    result = [m['line'] for m in selected]
     if returnDebug:
-        return result, {'hough_candidates': candidates, 'selected_members': [m['members'] for m in selected]}
+        # x_ref: smallest x where all selected strings simultaneously have Hough line coverage
+        inner_x_ref = max(m['x_start'] for m in selected) if selected else None
+        return result, {
+            'hough_candidates': candidates,
+            'selected_members': [m['members'] for m in selected],
+            'inner_x_ref': inner_x_ref,
+        }
     return result
 
 
