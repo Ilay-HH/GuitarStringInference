@@ -43,8 +43,16 @@ def detectStringLines(edgeImg, numStrings=6, roiY1=0, roiY2=None):
     return None
 
 
-def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngleDeg=35, yOffset=None):
-    """Find string lines (possibly angled) via Hough, returns list of (x1,y1,x2,y2) per string in full-frame coords."""
+def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngleDeg=35, yOffset=None, returnDebug=False):
+    """Find string lines via Hough with pair-clustering and x-start filtering.
+
+    Assumes Hough outputs two lines per string (top and bottom edge). Clusters nearby
+    lines by y at mid-x to merge each pair into one representative line, then filters
+    out clusters that start too far right (neck edges start later than string lines).
+    """
+    CLUSTER_DIST = 15
+    X_START_MAX_FRAC = 0.5
+
     if roiY2 is None:
         roiY2 = edgeImg.shape[0]
     if yOffset is None:
@@ -55,30 +63,70 @@ def detectStringLinesAngled(edgeImg, numStrings=6, roiY1=0, roiY2=None, maxAngle
         roi, rho=1, theta=np.pi / 180, threshold=50,
         minLineLength=roi.shape[1] // 4, maxLineGap=25
     )
+    empty_debug = {'hough_candidates': [], 'selected_members': []}
     if lines is None:
-        return None
-    candidates = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        y1, y2 = y1 + yOffset, y2 + yOffset
-        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-        if abs(angle) <= maxAngleDeg or abs(abs(angle) - 180) <= maxAngleDeg:
-            candidates.append((x1, y1, x2, y2))
-    if len(candidates) < numStrings:
-        return None
+        return (None, empty_debug) if returnDebug else None
+
     midX = w / 2
+
     def heightAtMid(x1, y1, x2, y2):
         if abs(x2 - x1) < 1e-6:
             return (y1 + y2) / 2
-        t = (midX - x1) / (x2 - x1)
-        t = np.clip(t, 0, 1)
+        t = np.clip((midX - x1) / (x2 - x1), 0, 1)
         return y1 + t * (y2 - y1)
-    candidates.sort(key=lambda L: heightAtMid(L[0], L[1], L[2], L[3]))
-    n = len(candidates)
+
+    candidates = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        y1f, y2f = y1 + yOffset, y2 + yOffset
+        angle = np.degrees(np.arctan2(y2f - y1f, x2 - x1))
+        if abs(angle) <= maxAngleDeg or abs(abs(angle) - 180) <= maxAngleDeg:
+            candidates.append((x1, y1f, x2, y2f))
+
+    if len(candidates) < numStrings:
+        return (None, {'hough_candidates': candidates, 'selected_members': []}) if returnDebug else None
+
+    candidates.sort(key=lambda L: heightAtMid(*L))
+
+    # Cluster consecutive lines whose y at mid-x are within CLUSTER_DIST pixels.
+    # Each cluster represents one string (top + bottom edges merged).
+    clusters = []
+    current = [candidates[0]]
+    for seg in candidates[1:]:
+        if heightAtMid(*seg) - heightAtMid(*current[-1]) <= CLUSTER_DIST:
+            current.append(seg)
+        else:
+            clusters.append(current)
+            current = [seg]
+    clusters.append(current)
+
+    merged = []
+    for cluster in clusters:
+        avg_x1 = int(np.mean([l[0] for l in cluster]))
+        avg_y1 = int(np.mean([l[1] for l in cluster]))
+        avg_x2 = int(np.mean([l[2] for l in cluster]))
+        avg_y2 = int(np.mean([l[3] for l in cluster]))
+        x_start = min(min(l[0], l[2]) for l in cluster)
+        merged.append({'line': (avg_x1, avg_y1, avg_x2, avg_y2), 'x_start': x_start, 'members': cluster})
+
+    # Strings start earlier on x-axis than guitar neck edges; keep early-starting clusters.
+    x_threshold = w * X_START_MAX_FRAC
+    filtered = [m for m in merged if m['x_start'] <= x_threshold]
+    if len(filtered) < numStrings:
+        filtered = merged
+
+    filtered.sort(key=lambda m: heightAtMid(*m['line']))
+    n = len(filtered)
     if n < numStrings:
-        return None
+        return (None, {'hough_candidates': candidates, 'selected_members': []}) if returnDebug else None
+
     indices = [int(i * (n - 1) / (numStrings - 1)) for i in range(numStrings)] if numStrings > 1 else [0]
-    return [candidates[i] for i in indices]
+    selected = [filtered[i] for i in indices]
+    result = [m['line'] for m in selected]
+
+    if returnDebug:
+        return result, {'hough_candidates': candidates, 'selected_members': [m['members'] for m in selected]}
+    return result
 
 
 def fallbackStringLines(h, w, numStrings=6, roiY1=None, roiY2=None):
