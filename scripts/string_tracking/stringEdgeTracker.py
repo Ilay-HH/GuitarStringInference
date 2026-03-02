@@ -98,6 +98,40 @@ def getHandsXRangeFromSkin(frame, roiY1, roiY2, w):
     return findLowSkinXRange(skinMask, roiY1, roiY2)
 
 
+def getStringLinesFromEdgemap(edgeImg, numStrings=6, roiY1=0, roiY2=None, yOffset=0, xOffset=0):
+    """
+    Edgemap -> numbered string lines. Returns list of (x1,y1,x2,y2) in full-frame coords, or None.
+    Index 0 = string 1 (top), index 5 = string 6 (bottom).
+    """
+    result = detectStringLinesAngled(edgeImg, numStrings, roiY1, roiY2, yOffset=yOffset)
+    if result is None:
+        return None
+    return [(x1 + xOffset, y1, x2 + xOffset, y2) for x1, y1, x2, y2 in result]
+
+
+def getStringLinesFromImage(frame, numStrings=6):
+    """
+    Image -> numbered string lines. Runs full flow: hands ROI, Canny, Hough, fallback.
+    Returns (stringLines, handsX1, handsY1, handsX2, handsY2). stringLines is list of (x1,y1,x2,y2).
+    """
+    from scripts.hands_region.handsRegionDetector import getProcessingRoi
+    h, w = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    result = detectStringLinesInHandsRegion(frame, gray, numStrings, returnCrop=True)
+    stringLines, handsX1, handsY1, handsX2, handsY2, roiGray, roiEdges = result
+    if stringLines is None:
+        stringLines = detectStringLinesAngled(roiEdges, numStrings, 0, roiEdges.shape[0], yOffset=handsY1)
+        if stringLines is not None:
+            stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
+    if stringLines is None:
+        stringLines = fallbackStringLines(h, w, numStrings, handsY1, handsY2)
+        handsX1, handsY1, handsX2, handsY2 = 0, int(h * 0.2), w, int(h * 0.8)
+    else:
+        bbox = getProcessingRoi(frame, gray, h, w, stringLines)
+        handsX1, handsY1, handsX2, handsY2 = bbox
+    return stringLines, handsX1, handsY1, handsX2, handsY2
+
+
 def detectStringLinesInHandsRegion(frame, gray, numStrings=6, roiY1=None, roiY2=None, returnCrop=False):
     """
     Path 1: Use getProcessingRoi (config-driven, hands_region when auto) for bbox, then run string detection.

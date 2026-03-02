@@ -10,8 +10,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from scripts.string_tracking.stringEdgeTracker import detectStringLinesAngled, detectStringLinesInHandsRegion, fallbackStringLines
-from scripts.hands_region.handsRegionDetector import getProcessingRoi
+from scripts.string_tracking.stringEdgeTracker import getStringLinesFromImage
 from scripts.inference.frameAnnotator import colorEdgesByString
 
 
@@ -36,22 +35,9 @@ def main():
         return
     h, w = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    result = detectStringLinesInHandsRegion(frame, gray, 6, returnCrop=True)
-    stringLines, handsX1, handsY1, handsX2, handsY2, roiGray, roiEdges = result
-    if stringLines is None:
-        stringLines = detectStringLinesAngled(roiEdges, 6, 0, roiEdges.shape[0], yOffset=handsY1)
-        if stringLines is not None:
-            stringLines = [(l[0] + handsX1, l[1], l[2] + handsX1, l[3]) for l in stringLines]
-    if stringLines is None:
-        stringLines = fallbackStringLines(h, w, 6, handsY1, handsY2)
-        handsX1, handsY1, handsX2, handsY2 = 0, int(h * 0.2), w, int(h * 0.8)
-        roiGray = gray[handsY1:handsY2, :]
-        roiEdges = cv2.Canny(roiGray, 50, 150)
-    else:
-        bbox = getProcessingRoi(frame, gray, h, w, stringLines)
-        handsX1, handsY1, handsX2, handsY2 = bbox
-        roiGray = gray[handsY1:handsY2, handsX1:handsX2]
-        roiEdges = cv2.Canny(roiGray, 50, 150)
+    stringLines, handsX1, handsY1, handsX2, handsY2 = getStringLinesFromImage(frame, 6)
+    roiGray = gray[handsY1:handsY2, handsX1:handsX2]
+    roiEdges = cv2.Canny(roiGray, 50, 150)
     colors = [
         (100, 100, 255), (50, 150, 255), (100, 255, 100),
         (255, 200, 50), (255, 100, 200), (100, 200, 255)
